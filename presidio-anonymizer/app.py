@@ -11,6 +11,8 @@ from presidio_anonymizer import AnonymizerEngine, DeanonymizeEngine
 from presidio_anonymizer.entities import InvalidParamException
 from presidio_anonymizer.services.app_entities_convertor import AppEntitiesConvertor
 
+from waitress import serve
+
 DEFAULT_PORT = "3000"
 
 LOGGING_CONF_FILE = "logging.ini"
@@ -112,8 +114,10 @@ class Server:
             self.logger.error(f"A fatal error occurred during execution: {e}")
             return jsonify(error="Internal server error"), 500
 
+def start():
+    return Server().app
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", DEFAULT_PORT))
-    server = Server()
-    server.app.run(host="0.0.0.0", port=port)
+    serve(start(), host="0.0.0.0", port=8080)
+

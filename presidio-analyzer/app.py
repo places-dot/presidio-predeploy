@@ -124,8 +124,10 @@ class Server:
         def http_exception(e):
             return jsonify(error=e.description), e.code
 
+def start():
+    return Server().app
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", DEFAULT_PORT))
-    server = Server()
-    server.app.run(host="0.0.0.0", port=port)
+    
+    serve(start(), host="0.0.0.0", port=8080)

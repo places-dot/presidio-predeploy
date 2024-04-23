@@ -1,0 +1,11 @@
+FROM python:3.11-slim-bookworm
+
+ENV PIPENV_VENV_IN_PROJECT=1
+ENV PIP_NO_CACHE_DIR=1
+WORKDIR /opt/app/
+
+COPY ./Pipfile* /opt/app/
+RUN pip install pipenv \
+  && pipenv install --deploy
+
+COPY . /opt/app/

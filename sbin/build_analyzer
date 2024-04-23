@@ -1,0 +1,5 @@
+#!/bin/bash
+
+NLP_MODEL_NAME=${1:-default}
+
+docker buildx build ./presidio-analyzer/. -f ./presidio-analyzer/Dockerfile.service --platform=linux/amd64 --tag intentfulba/presidio-analyzer:${NLP_MODEL_NAME:-default} --build-arg=NLP_CONF_FILE=${NLP_MODEL_NAME:-default} --load && docker push intentfulba/presidio-analyzer:${NLP_MODEL_NAME:-default}

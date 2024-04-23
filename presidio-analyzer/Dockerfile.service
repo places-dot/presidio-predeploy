@@ -1,0 +1,19 @@
+FROM python:3.11-slim-bookworm
+
+ARG NLP_CONF_FILE
+ENV NLP_CONF_FILE=conf/$NLP_CONF_FILE.yaml
+ENV PIPENV_VENV_IN_PROJECT=1
+ENV PIP_NO_CACHE_DIR=1
+WORKDIR /opt/app/
+
+COPY ./Pipfile* /opt/app/
+RUN pip install pipenv \
+  && pipenv install --deploy
+# install nlp models specified in conf/default.yaml
+
+COPY ./install_nlp_models.py /opt/app/
+
+COPY $NLP_CONF_FILE  /opt/app/$NLP_CONF_FILE
+RUN pipenv run python install_nlp_models.py --conf_file $NLP_CONF_FILE
+
+COPY . /opt/app/
