@@ -41,8 +41,7 @@ setup(
     include_package_data=True,
     keywords="presidio_anonymizer",
     install_requires=[
-        "pycryptodome>=3.10.1",
-        "waitress>=3.0"
+        "pycryptodome>=3.10.1"
     ],
     packages=find_packages(include=["presidio_anonymizer", "presidio_anonymizer.*"]),
     test_suite="tests",

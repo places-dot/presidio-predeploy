@@ -38,8 +38,7 @@ setuptools.setup(
         "regex",
         "tldextract",
         "pyyaml",
-        "phonenumbers>=8.12,<9.0.0",
-        "waitress>=3.0"
+        "phonenumbers>=8.12,<9.0.0"
     ],
     extras_require={
         "transformers": ["spacy_huggingface_pipelines"],

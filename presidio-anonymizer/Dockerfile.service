@@ -4,8 +4,8 @@ ENV PIPENV_VENV_IN_PROJECT=1
 ENV PIP_NO_CACHE_DIR=1
 WORKDIR /opt/app/
 
-COPY ./Pipfile* /opt/app/
-RUN pip install pipenv \
-  && pipenv install --deploy
-
 COPY . /opt/app/
+
+RUN pip install . waitress pipenv flask && pipenv install --deploy
+
+CMD ["waitress-serve", "--port=5002", "--call", "app:start"]
