@@ -14,4 +14,6 @@ RUN apt-get clean autoclean
 RUN apt-get autoremove --yes
 RUN rm -rf /var/lib/{apt,dpkg,cache,log}/
 
+EXPOSE 5002:5002
+
 CMD ["pipenv", "run", "waitress-serve", "--port=5002", "--call", "app:start"]
