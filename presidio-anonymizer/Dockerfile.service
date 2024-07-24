@@ -1,5 +1,7 @@
 FROM python:3.11-slim-bookworm
 
+RUN apt-get update && apt-get install -y curl
+
 ENV PIPENV_VENV_IN_PROJECT=1
 ENV PIP_NO_CACHE_DIR=1
 WORKDIR /opt/app/
@@ -7,5 +9,9 @@ WORKDIR /opt/app/
 COPY . /opt/app/
 
 RUN pip install waitress pipenv flask && pipenv install --deploy
+
+RUN apt-get clean autoclean
+RUN apt-get autoremove --yes
+RUN rm -rf /var/lib/{apt,dpkg,cache,log}/
 
 CMD ["pipenv", "run", "waitress-serve", "--port=5002", "--call", "app:start"]

@@ -1,5 +1,7 @@
 FROM python:3.11-slim-bookworm
 
+RUN apt-get update && apt-get install -y curl
+
 ARG NLP_CONF_FILE
 ENV NLP_CONF_FILE=conf/$NLP_CONF_FILE.yaml
 ENV PIPENV_VENV_IN_PROJECT=1
@@ -12,5 +14,9 @@ RUN pip install waitress pipenv flask && pipenv install --deploy
 
 COPY $NLP_CONF_FILE  /opt/app/$NLP_CONF_FILE
 RUN pipenv run python install_nlp_models.py --conf_file $NLP_CONF_FILE
+
+RUN apt-get clean autoclean
+RUN apt-get autoremove --yes
+RUN rm -rf /var/lib/{apt,dpkg,cache,log}/
 
 CMD ["pipenv", "run", "waitress-serve", "--port=5001", "--call", "app:start"]

@@ -1,5 +1,7 @@
 FROM python:3.9-slim
 
+RUN apt-get update && apt-get install -y curl
+
 ARG NAME
 ARG NLP_CONF_FILE=conf/default.yaml
 ENV PIPENV_VENV_IN_PROJECT=1
@@ -16,4 +18,9 @@ RUN pipenv run python install_nlp_models.py --conf_file ${NLP_CONF_FILE}
 
 COPY . /usr/bin/${NAME}/
 EXPOSE ${PORT}
+
+RUN apt-get clean autoclean
+RUN apt-get autoremove --yes
+RUN rm -rf /var/lib/{apt,dpkg,cache,log}/
+
 CMD pipenv run python app.py --host 0.0.0.0
