@@ -13,6 +13,8 @@ from presidio_anonymizer.services.app_entities_convertor import AppEntitiesConve
 
 from waitress import serve
 
+API_KEY = os.getenv('API_KEY')
+
 DEFAULT_PORT = "3000"
 
 LOGGING_CONF_FILE = "logging.ini"
@@ -41,6 +43,17 @@ class Server:
         self.anonymizer = AnonymizerEngine()
         self.deanonymize = DeanonymizeEngine()
         self.logger.info(WELCOME_MESSAGE)
+
+        @self.app.before_request
+        def check_api_key():
+            if request.method == "OPTIONS":  # CORS preflight, allows all
+                return            
+            # Skip authentication for the health check endpoint
+            if request.path == "/health":
+                return
+            api_key = request.headers.get('Authorization')
+            if api_key is None or api_key != f'Bearer {API_KEY}':
+                return jsonify({"error": "Unauthorized"}), 401
 
         @self.app.route("/health")
         def health() -> str:
