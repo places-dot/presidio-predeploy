@@ -1,7 +1,6 @@
 from typing import Dict
 
-from presidio_anonymizer.operators import Operator, Encrypt
-from presidio_anonymizer.operators import OperatorType
+from presidio_anonymizer.operators import Encrypt, Operator, OperatorType
 from presidio_anonymizer.operators.aes_cipher import AESCipher
 
 
@@ -21,7 +20,7 @@ class Decrypt(Operator):
         :return: The encrypted text
         """
         key = params.get(self.KEY)
-        if type(key) is str:
+        if isinstance(key, str):
             key = key.encode("utf8")
         decrypted_text = AESCipher.decrypt(key=key, text=text)
         return decrypted_text
@@ -33,7 +32,7 @@ class Decrypt(Operator):
         :param params:
             * *key* The key supplied by the user for the encryption.
                     Should be a string of 128, 192 or 256 bits length.
-        :raises InvalidParamException in case on an invalid parameter.
+        :raises InvalidParamException: in case on an invalid parameter.
         """
         Encrypt().validate(params)
 

@@ -1,6 +1,6 @@
 import shutil
 from pathlib import Path
-from typing import Dict
+from typing import Dict, List
 
 import pytest
 
@@ -12,7 +12,7 @@ from presidio_analyzer import (
 )
 from presidio_analyzer import RecognizerRegistry
 from presidio_analyzer.nlp_engine import NlpEngineProvider, NlpEngine
-from presidio_analyzer.predefined_recognizers import NLP_RECOGNIZERS
+from presidio_analyzer.predefined_recognizers import NLP_RECOGNIZERS, PREDEFINED_RECOGNIZERS
 from tests.mocks import RecognizerRegistryMock, NlpEngineMock
 
 
@@ -53,6 +53,10 @@ def nlp_engines(request, nlp_engine_provider) -> Dict[str, NlpEngine]:
                     }
                 ]
             )
+        elif name == "slim":
+            available_engines[f"{name}_en"] = engine_cls(
+                models=[{"lang_code": "en", "model_name": "en_core_web_sm"}]
+            )
         else:
             raise ValueError("Unsupported engine for tests")
 
@@ -68,7 +72,6 @@ def skip_by_engine(request, nlp_engines):
             pytest.skip(f"skipped on this engine: {marker_arg}")
 
 
-@pytest.mark.skip_engine("spacy_en")
 @pytest.fixture(scope="session")
 def spacy_nlp_engine(nlp_engines):
     nlp_engine = nlp_engines.get("spacy_en", None)
@@ -80,6 +83,11 @@ def spacy_nlp_engine(nlp_engines):
 @pytest.fixture(scope="session")
 def nlp_recognizers() -> Dict[str, EntityRecognizer]:
     return {name: rec_cls() for name, rec_cls in NLP_RECOGNIZERS.items()}
+
+
+@pytest.fixture(scope="session")
+def mandatory_recognizers() -> List[str]:
+    return list(PREDEFINED_RECOGNIZERS)
 
 
 @pytest.fixture(scope="session")

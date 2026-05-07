@@ -1,4 +1,5 @@
 """Replaces the PII text entity with empty string."""
+
 from typing import Dict
 
 from presidio_anonymizer.operators import Operator, OperatorType
@@ -12,7 +13,7 @@ class Redact(Operator):
         return ""
 
     def validate(self, params: Dict = None) -> None:
-        """Redact does not require any paramters so no validation is needed."""
+        """Redact does not require any parameters so no validation is needed."""
         pass
 
     def operator_name(self) -> str:

@@ -1,29 +1,27 @@
+import json
 import os
-import uuid
 import shutil
 from copy import deepcopy
-import tempfile
 from pathlib import Path
-from PIL import Image, ImageOps
-import pydicom
-from pydicom.pixel_data_handlers.util import apply_voi_lut
-import png
-import json
-import numpy as np
-from matplotlib import pyplot as plt  # necessary import for PIL typing # noqa: F401
-from typing import Tuple, List, Dict, Union, Optional
+from typing import Dict, List, Optional, Tuple, Union
 
-from presidio_image_redactor import ImageRedactorEngine
-from presidio_image_redactor import ImageAnalyzerEngine  # noqa: F401
+import numpy as np
+import pydicom
+from matplotlib import pyplot as plt  # necessary import for PIL typing # noqa: F401
+from PIL import Image, ImageOps
 from presidio_analyzer import PatternRecognizer
+from pydicom.multival import MultiValue
+from pydicom.pixel_data_handlers.util import apply_voi_lut
+
+from presidio_image_redactor import (
+    ImageAnalyzerEngine,  # noqa: F401
+    ImageRedactorEngine,
+)
 from presidio_image_redactor.entities import ImageRecognizerResult
 
 
 class DicomImageRedactorEngine(ImageRedactorEngine):
-    """Performs OCR + PII detection + bounding box redaction.
-
-    :param image_analyzer_engine: Engine which performs OCR + PII detection.
-    """
+    """Performs OCR + PII detection + bounding box redaction."""
 
     def redact_and_return_bbox(
         self,
@@ -70,21 +68,20 @@ class DicomImageRedactorEngine(ImageRedactorEngine):
 
         instance = deepcopy(image)
 
-        # Load image for processing
-        with tempfile.TemporaryDirectory() as tmpdirname:
-            # Convert DICOM to PNG and add padding for OCR (during analysis)
-            is_greyscale = self._check_if_greyscale(instance)
-            image = self._rescale_dcm_pixel_array(instance, is_greyscale)
-            image_name = str(uuid.uuid4())
-            self._save_pixel_array_as_png(image, is_greyscale, image_name, tmpdirname)
+        is_greyscale = self._check_if_greyscale(instance)
+        image_np = self._rescale_dcm_pixel_array(instance, is_greyscale)
+        if is_greyscale:
+            # model L for grayscale, and has 8 bit-pixel to store the pixel value
+            image_pil = Image.fromarray(image_np, mode="L")
+        else:
+            # model RGB, has 3x8 bit pixel available to store the value
+            image_pil = Image.fromarray(image_np, mode="RGB")
+        padded_image_pil = self._add_padding(image_pil, is_greyscale, padding_width)
 
-            png_filepath = f"{tmpdirname}/{image_name}.png"
-            loaded_image = Image.open(png_filepath)
-            image = self._add_padding(loaded_image, is_greyscale, padding_width)
 
         # Detect PII
         analyzer_results = self._get_analyzer_results(
-            image,
+            padded_image_pil,
             instance,
             use_metadata,
             ocr_kwargs,
@@ -157,12 +154,11 @@ class DicomImageRedactorEngine(ImageRedactorEngine):
     ) -> None:
         """Redact method to redact from a given file.
 
-        Please notice, this method duplicates the file, creates
-        new instance and manipulate them.
-
         :param input_dicom_path: String path to DICOM image.
         :param output_dir: String path to parent output directory.
-        :param padding_width : Padding width to use when running OCR.
+        :param padding_width: Padding width to use when running OCR.
+        :param crop_ratio: Portion of image to consider when selecting
+        most common pixel value as the background color value.
         :param fill: Color setting to use for redaction box
         ("contrast" or "background").
         :param use_metadata: Whether to redact text in the image that
@@ -174,6 +170,10 @@ class DicomImageRedactorEngine(ImageRedactorEngine):
         for ad-hoc recognizer.
         :param text_analyzer_kwargs: Additional values for the analyze method
         in AnalyzerEngine.
+
+        Please notice, this method duplicates the file, creates
+        new instance and manipulate them.
+
         """
         # Verify the given paths
         if Path(input_dicom_path).is_dir() is True:
@@ -223,24 +223,25 @@ class DicomImageRedactorEngine(ImageRedactorEngine):
     ) -> None:
         """Redact method to redact from a directory of files.
 
-        Please notice, this method duplicates the files, creates
-        new instances and manipulate them.
-
         :param input_dicom_path: String path to directory of DICOM images.
         :param output_dir: String path to parent output directory.
-        :param padding_width : Padding width to use when running OCR.
+        :param padding_width: Padding width to use when running OCR.
         :param crop_ratio: Portion of image to consider when selecting
         most common pixel value as the background color value.
         :param fill: Color setting to use for redaction box
         ("contrast" or "background").
         :param use_metadata: Whether to redact text in the image that
         are present in the metadata.
-        :param save_bboxes: True if we want to save boundings boxes.
+        :param save_bboxes: True if we want to save bounding boxes.
         :param ocr_kwargs: Additional params for OCR methods.
         :param ad_hoc_recognizers: List of PatternRecognizer objects to use
         for ad-hoc recognizer.
         :param text_analyzer_kwargs: Additional values for the analyze method
         in AnalyzerEngine.
+
+        Please notice, this method duplicates the files, creates
+        new instances and manipulate them.
+
         """
         # Verify the given paths
         if Path(input_dicom_path).is_dir() is False:
@@ -338,67 +339,15 @@ class DicomImageRedactorEngine(ImageRedactorEngine):
             image_2d_scaled = image_2d_float
         else:
             # Rescaling grey scale between 0-255
-            image_2d_scaled = ((image_2d_float.max() - image_2d_float) / (
-                    image_2d_float.max() - image_2d_float.min())) * 255.0
+            image_2d_scaled = (
+                (image_2d_float.max() - image_2d_float)
+                / (image_2d_float.max() - image_2d_float.min())
+            ) * 255.0
 
         # Convert to uint
         image_2d_scaled = np.uint8(image_2d_scaled)
 
         return image_2d_scaled
-
-    @staticmethod
-    def _save_pixel_array_as_png(
-        pixel_array: np.array,
-        is_greyscale: bool,
-        output_file_name: str = "example",
-        output_dir: str = "temp_dir",
-    ) -> None:
-        """Save the pixel data from a loaded DICOM instance as PNG.
-
-        :param pixel_array: Pixel data from the instance.
-        :param is_greyscale: True if image is greyscale.
-        :param output_file_name: Name of output file (no file extension).
-        :param output_dir: String path to output directory.
-        """
-        shape = pixel_array.shape
-
-        # Write the PNG file
-        os.makedirs(output_dir, exist_ok=True)
-        if is_greyscale:
-            with open(f"{output_dir}/{output_file_name}.png", "wb") as png_file:
-                w = png.Writer(shape[1], shape[0], greyscale=True)
-                w.write(png_file, pixel_array)
-        else:
-            with open(f"{output_dir}/{output_file_name}.png", "wb") as png_file:
-                w = png.Writer(shape[1], shape[0], greyscale=False)
-                # Semi-flatten the pixel array to RGB representation in 2D
-                pixel_array = np.reshape(pixel_array, (shape[0], shape[1] * 3))
-                w.write(png_file, pixel_array)
-
-        return None
-
-    @classmethod
-    def _convert_dcm_to_png(cls, filepath: Path, output_dir: str = "temp_dir") -> tuple:
-        """Convert DICOM image to PNG file.
-
-        :param filepath: pathlib Path to a single dcm file.
-        :param output_dir: String path to output directory.
-
-        :return: Shape of pixel array and if image mode is greyscale.
-        """
-        ds = pydicom.dcmread(filepath)
-
-        # Check if image is grayscale using the Photometric Interpretation element
-        is_greyscale = cls._check_if_greyscale(ds)
-
-        # Rescale pixel array
-        image = cls._rescale_dcm_pixel_array(ds, is_greyscale)
-        shape = image.shape
-
-        # Write to PNG file
-        cls._save_pixel_array_as_png(image, is_greyscale, filepath.stem, output_dir)
-
-        return shape, is_greyscale
 
     @staticmethod
     def _get_bg_color(
@@ -538,7 +487,7 @@ class DicomImageRedactorEngine(ImageRedactorEngine):
             raise ValueError("Enter a positive value for padding")
         elif padding_width >= 100:
             raise ValueError(
-                "Excessive padding width entered. Please use a width under 100 pixels."  # noqa: E501
+                "Excessive padding width entered. Please use a width under 100 pixels."
             )
 
         # Select most common color as border color
@@ -636,7 +585,7 @@ class DicomImageRedactorEngine(ImageRedactorEngine):
     def augment_word(word: str, case_sensitive: bool = False) -> list:
         """Apply multiple types of casing to the provided string.
 
-        :param words: String containing the word or term of interest.
+        :param word: String containing the word or term of interest.
         :param case_sensitive: True if we want to preserve casing.
 
         :return: List of the same string with different casings and spacing.
@@ -698,18 +647,29 @@ class DicomImageRedactorEngine(ImageRedactorEngine):
     def _process_names(cls, text_metadata: list, is_name: list) -> list:
         """Process names to have multiple iterations in our PHI list.
 
-        :param metadata_text: List of all the instance's element values
+        :param text_metadata: List of all the instance's element values
         (excluding pixel data).
         :param is_name: True if the element is specified as being a name.
 
-        :return: Metadata text with additional name iterations appended.
+        :return: List of PHI strings for elements where is_name is True,
+        with additional name augmentations appended.
         """
-        phi_list = text_metadata.copy()
+        phi_list = []
 
         for i in range(0, len(text_metadata)):
             if is_name[i] is True:
-                original_text = str(text_metadata[i])
-                phi_list += cls.augment_word(original_text)
+                value = text_metadata[i]
+                # Flatten MultiValue/list/tuple into individual elements
+                items = (
+                    value
+                    if isinstance(value, (MultiValue, list, tuple))
+                    else [value]
+                )
+                for item in items:
+                    text = str(item).strip()
+                    if text:
+                        phi_list.append(text)
+                        phi_list += cls.augment_word(text)
 
         return phi_list
 
@@ -733,7 +693,11 @@ class DicomImageRedactorEngine(ImageRedactorEngine):
         is_name: List[bool],
         is_patient: List[bool],
     ) -> list:
-        """Make the list of PHI to use in Presidio ad-hoc recognizer.
+        """Build a list of PHI strings for the ad-hoc recognizer.
+
+        Combines names and patient-related fields, adds generic PHI, flattens nested
+        collections, stringifies, trims empties, and de-duplicates while preserving
+        order of first appearance.
 
         :param original_metadata: List of all the instance's element values
         (excluding pixel data).
@@ -743,26 +707,37 @@ class DicomImageRedactorEngine(ImageRedactorEngine):
 
         :return: List of PHI (str) to use with Presidio ad-hoc recognizer.
         """
-        # Process names
-        phi_list = cls._process_names(original_metadata, is_name)
+        # 1) Base PHI via existing helpers
+        phi: list = []
+        phi.extend(cls._process_names(original_metadata, is_name))
+        phi.extend(cls._process_names(original_metadata, is_patient))
+        phi = cls._add_known_generic_phi(phi)
 
-        # Add known potential phi values
-        phi_list = cls._add_known_generic_phi(phi_list)
+        # 2) Flatten safely (MultiValue/list/tuple) and stringify
+        flattened: list = []
+        for val in phi:
+            if isinstance(val, (MultiValue, list, tuple)):
+                for item in val:
+                    if item is None:
+                        continue
+                    s = str(item).strip()
+                    if s:
+                        flattened.append(s)
+            else:
+                if val is None:
+                    continue
+                s = str(val).strip()
+                if s:
+                    flattened.append(s)
 
-        # Flatten any nested lists
-        for phi in phi_list:
-            if type(phi) in [pydicom.multival.MultiValue, list, tuple]:
-                for item in phi:
-                    phi_list.append(item)
-                phi_list.remove(phi)
-
-        # Convert all items to strings
-        phi_str_list = [str(phi) for phi in phi_list]
-
-        # Remove duplicates
-        phi_str_list = list(set(phi_str_list))
-
-        return phi_str_list
+        # 3) Stable de-duplication
+        seen = set()
+        out: list = []
+        for s in flattened:
+            if s not in seen:
+                seen.add(s)
+                out.append(s)
+        return out
 
     @classmethod
     def _set_bbox_color(
@@ -785,15 +760,14 @@ class DicomImageRedactorEngine(ImageRedactorEngine):
         else:
             raise ValueError("fill must be 'contrast' or 'background'")
 
-        # Temporarily save as PNG to get color
-        with tempfile.TemporaryDirectory() as tmpdirname:
-            dst_path = Path(f"{tmpdirname}/temp.dcm")
-            instance.save_as(dst_path)
-            _, is_greyscale = cls._convert_dcm_to_png(dst_path, output_dir=tmpdirname)
-
-            png_filepath = f"{tmpdirname}/{dst_path.stem}.png"
-            loaded_image = Image.open(png_filepath)
-            box_color = cls._get_bg_color(loaded_image, is_greyscale, invert_flag)
+        is_greyscale = cls._check_if_greyscale(instance)
+        if is_greyscale:
+            # model L for grayscale, and has 8 bit-pixel to store the pixel value
+            image_pil = Image.fromarray(instance.pixel_array, mode="L")
+        else:
+            # model RGB, has 3x8 bit pixel available to store the value
+            image_pil = Image.fromarray(instance.pixel_array, mode="RGB")
+        box_color = cls._get_bg_color(image_pil, is_greyscale, invert_flag)
 
         return box_color
 
@@ -906,9 +880,9 @@ class DicomImageRedactorEngine(ImageRedactorEngine):
             left = bbox["left"]
             width = bbox["width"]
             height = bbox["height"]
-            redacted_instance.pixel_array[
-                top : top + height, left : left + width
-            ] = box_color
+            redacted_instance.pixel_array[top : top + height, left : left + width] = (
+                box_color
+            )
 
         redacted_instance.PixelData = redacted_instance.pixel_array.tobytes()
 
@@ -957,7 +931,7 @@ class DicomImageRedactorEngine(ImageRedactorEngine):
 
             if ad_hoc_recognizers is None:
                 ad_hoc_recognizers = [deny_list_recognizer]
-            elif type(ad_hoc_recognizers) is list:
+            elif isinstance(ad_hoc_recognizers, list):
                 ad_hoc_recognizers.append(deny_list_recognizer)
 
         # Detect PII
@@ -1046,13 +1020,14 @@ class DicomImageRedactorEngine(ImageRedactorEngine):
         except AttributeError:
             raise AttributeError("Provided DICOM file lacks pixel data.")
 
-        # Load image for processing
-        with tempfile.TemporaryDirectory() as tmpdirname:
-            # Convert DICOM to PNG and add padding for OCR (during analysis)
-            _, is_greyscale = self._convert_dcm_to_png(dst_path, output_dir=tmpdirname)
-            png_filepath = f"{tmpdirname}/{dst_path.stem}.png"
-            loaded_image = Image.open(png_filepath)
-            image = self._add_padding(loaded_image, is_greyscale, padding_width)
+        is_greyscale = self._check_if_greyscale(instance)
+        image = self._rescale_dcm_pixel_array(instance, is_greyscale)
+        if is_greyscale:
+            # model L for grayscale, and has 8 bit-pixel to store the pixel value
+            loaded_image = Image.fromarray(image, mode="L")
+        else:
+            loaded_image = Image.fromarray(image, mode="RGB")
+        image = self._add_padding(loaded_image, is_greyscale, padding_width)
 
         # Detect PII
         analyzer_results = self._get_analyzer_results(

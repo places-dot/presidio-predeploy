@@ -26,7 +26,7 @@ class NlpArtifacts:
         tokens: Doc,
         tokens_indices: List[int],
         lemmas: List[str],
-        nlp_engine: "NlpEngine",  # noqa F821
+        nlp_engine: "NlpEngine",  # noqa: F821
         language: str,
         scores: Optional[List[float]] = None,
     ):
@@ -40,7 +40,9 @@ class NlpArtifacts:
 
     @staticmethod
     def set_keywords(
-        nlp_engine, lemmas: List[str], language: str  # noqa ANN001
+        nlp_engine,
+        lemmas: List[str],
+        language: str,
     ) -> List[str]:
         """
         Return keywords fpr text.

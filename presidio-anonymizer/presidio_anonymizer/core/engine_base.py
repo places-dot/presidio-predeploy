@@ -1,14 +1,15 @@
 """Handle the entire text operations using the operators."""
+
 import logging
 from abc import ABC
-from typing import List, Dict
+from typing import Dict, List
 
 from presidio_anonymizer.core.text_replace_builder import TextReplaceBuilder
 from presidio_anonymizer.entities import (
-    PIIEntity,
-    OperatorConfig,
     EngineResult,
+    OperatorConfig,
     OperatorResult,
+    PIIEntity,
 )
 from presidio_anonymizer.operators import OperatorsFactory, OperatorType
 
@@ -26,7 +27,7 @@ class EngineBase(ABC):
         pii_entities: List[PIIEntity],
         operators_metadata: Dict[str, OperatorConfig],
         operator_type: OperatorType,
-        **operator_kwargs: Dict
+        **operator_kwargs: Dict,
     ) -> EngineResult:
         """
         Operate will do the operations required by the user over the text.
@@ -36,11 +37,13 @@ class EngineBase(ABC):
         :param operators_metadata: dictionary where the key is the entity_type and what
         :type operator_type: either anonymize or deanonymize
         we want to perform over this entity_type.
+        :param operator_kwargs: Additional keyword arguments to pass to operators
         :return:
         """
         text_replace_builder = TextReplaceBuilder(original_text=text)
         engine_result = EngineResult()
         sorted_pii_entities = sorted(pii_entities, reverse=True)
+
         for entity in sorted_pii_entities:
             text_to_operate_on = text_replace_builder.get_text_in_position(
                 entity.start, entity.end
@@ -51,7 +54,11 @@ class EngineBase(ABC):
                 entity.entity_type, operators_metadata
             )
             changed_text = self.__operate_on_text(
-                entity, text_to_operate_on, operator_metadata, operator_type
+                entity,
+                text_to_operate_on,
+                operator_metadata,
+                operator_type,
+                operator_kwargs,
             )
             index_from_end = text_replace_builder.replace_text_get_insertion_index(
                 changed_text, entity.start, entity.end
@@ -79,6 +86,7 @@ class EngineBase(ABC):
         text_to_operate_on: str,
         operator_metadata: OperatorConfig,
         operator_type: OperatorType,
+        operator_kwargs: Dict,
     ) -> str:
         entity_type = text_metadata.entity_type
         self.logger.debug(f"getting operator for {entity_type}")
@@ -86,7 +94,9 @@ class EngineBase(ABC):
             operator_metadata.operator_name, operator_type
         )
         self.logger.debug(f"validating operator {operator} for {entity_type}")
-        params = operator_metadata.params
+
+        # Make a copy of params to avoid modifying the original config
+        params = operator_metadata.params.copy()
         params["entity_type"] = entity_type
 
         operator.validate(params=params)

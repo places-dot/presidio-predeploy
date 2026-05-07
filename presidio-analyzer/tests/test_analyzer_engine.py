@@ -1,25 +1,28 @@
 import copy
+import re
 from abc import ABC
+from contextlib import nullcontext
 from typing import List, Optional
+from unittest.mock import patch
 
 import pytest
-
 from presidio_analyzer import (
     AnalyzerEngine,
-    PatternRecognizer,
-    Pattern,
-    RecognizerRegistry,
     EntityRecognizer,
+    Pattern,
+    PatternRecognizer,
+    RecognizerRegistry,
     RecognizerResult,
 )
 from presidio_analyzer.nlp_engine import (
     NlpArtifacts,
     SpacyNlpEngine,
 )
+from presidio_analyzer.recognizer_registry import RecognizerRegistryProvider
 
 # noqa: F401
 from tests import assert_result
-from tests.mocks import NlpEngineMock, AppTracerMock, RecognizerRegistryMock
+from tests.mocks import AppTracerMock, NlpEngineMock, RecognizerRegistryMock
 
 
 @pytest.fixture(scope="module")
@@ -54,11 +57,6 @@ def unit_test_guid():
     return "00000000-0000-0000-0000-000000000000"
 
 
-@pytest.fixture(scope="module")
-def nlp_engine(nlp_engines):
-    return nlp_engines["spacy_en"]
-
-
 def test_simple():
     dic = {
         "text": "John Smith drivers license is AC432223",
@@ -87,6 +85,29 @@ def test_when_analyze_with_predefined_recognizers_then_return_results(
     assert len(results) == 1
     assert_result(results[0], "CREDIT_CARD", 14, 33, max_score)
 
+@pytest.mark.parametrize(
+    "registry_config,analyzer_lang,expectation",
+    [
+        ({"supported_languages": ["en"]}, ["es", "de"], pytest.raises(ValueError)),
+        (None, ["es", "de"], pytest.raises(ValueError)),
+        ({"supported_languages": ["es", "de"]}, None, pytest.raises(ValueError)),
+        ({"supported_languages": ["es", "de"]}, ["de", "es"], nullcontext()),
+        (None, None, nullcontext()),
+    ]
+)
+def test_when_analyze_with_unsupported_language_must_match(registry_config, analyzer_lang, expectation):
+    with expectation:
+        registry = RecognizerRegistryProvider(registry_configuration=registry_config).create_recognizer_registry()
+        AnalyzerEngine(
+            registry=registry,
+            supported_languages=analyzer_lang,
+            nlp_engine=NlpEngineMock(),
+        )
+
+def test_when_analyze_with_defaults_success(
+):
+    registry = RecognizerRegistryProvider().create_recognizer_registry()
+    AnalyzerEngine(registry=registry)
 
 def test_when_analyze_with_multiple_predefined_recognizers_then_succeed(
     loaded_registry, unit_test_guid, spacy_nlp_engine, max_score
@@ -240,6 +261,76 @@ def test_when_allow_list_specified_multiple_items(loaded_analyzer_engine):
     assert len(results) == 0
 
 
+def test_when_regex_allow_list_specified(loaded_analyzer_engine):
+    text = "bing.com is his favorite website, microsoft.com is his second favorite, azure.com is his third favorite"
+    results = loaded_analyzer_engine.analyze(
+        text=text,
+        language="en",
+    )
+    assert len(results) == 3
+    assert_result(results[0], "URL", 0, 8, 0.5)
+
+    results = loaded_analyzer_engine.analyze(
+        text=text, language="en", allow_list=["bing"], allow_list_match = "regex"
+    )
+    assert len(results) == 2
+    assert text[results[0].start : results[0].end] == "microsoft.com"
+    assert text[results[1].start : results[1].end] == "azure.com"
+
+
+def test_when_regex_allow_list_specified_but_none_in_file(loaded_analyzer_engine):
+
+    text = "bing.com is his favorite website"
+    results = loaded_analyzer_engine.analyze(
+        text=text,
+        language="en",
+    )
+    assert len(results) == 1
+    assert_result(results[0], "URL", 0, 8, 0.5)
+
+    results = loaded_analyzer_engine.analyze(
+        text=text, language="en", allow_list=["microsoft"], allow_list_match = "regex"
+    )
+    assert len(results) == 1
+    assert_result(results[0], "URL", 0, 8, 0.5)
+
+
+def test_when_regex_allow_list_specified_multiple_items_with_missing_flags(loaded_analyzer_engine):
+    text = "bing.com is his favorite website, microsoft.com is his second favorite, azure.com is his third favorite"
+    results = loaded_analyzer_engine.analyze(
+        text=text,
+        language="en",
+    )
+    assert len(results) == 3
+    assert_result(results[0], "URL", 0, 8, 0.5)
+
+    results = loaded_analyzer_engine.analyze(
+        text=text, language="en", allow_list=["bing", "microsoft"], allow_list_match = "regex", 
+    )
+    assert len(results) == 1
+    assert text[results[0].start : results[0].end] == "azure.com"
+
+
+def test_when_regex_allow_list_specified_with_regex_flags(loaded_analyzer_engine):
+    text = "bing.com is his favorite website, microsoft.com is his second favorite, azure.com is his third favorite"
+    results = loaded_analyzer_engine.analyze(
+        text=text,
+        language="en",
+    )
+    assert len(results) == 3
+    assert_result(results[0], "URL", 0, 8, 0.5)
+
+    results = loaded_analyzer_engine.analyze(
+        text=text, language="en", allow_list=["BING", "MICROSOFT", "AZURE"], allow_list_match = "regex", regex_flags=0
+    )
+    assert len(results) == 3
+
+    results = loaded_analyzer_engine.analyze(
+        text=text, language="en", allow_list=["BING", "MICROSOFT", "AZURE"], allow_list_match = "regex", regex_flags=re.IGNORECASE
+    )
+    assert len(results) == 0
+
+
 def test_when_removed_pattern_recognizer_then_doesnt_work(unit_test_guid):
     pattern = Pattern("spaceship pattern", r"\W*(spaceship)\W*", 0.8)
     pattern_recognizer = PatternRecognizer(
@@ -349,7 +440,7 @@ def test_when_entities_is_none_all_recognizers_loaded_then_return_all_fields(
 def test_when_analyze_then_apptracer_has_value(
     loaded_registry, unit_test_guid, spacy_nlp_engine
 ):
-    text = "My name is Bart Simpson, and Credit card: 4095-2609-9393-4932,  my phone is 425 8829090"  # noqa E501
+    text = "My name is Bart Simpson, and Credit card: 4095-2609-9393-4932,  my phone is 425 8829090"  # noqa: E501
     language = "en"
     entities = ["CREDIT_CARD", "PHONE_NUMBER", "PERSON"]
     app_tracer_mock = AppTracerMock(enable_decision_process=True)
@@ -842,3 +933,28 @@ def test_when_multiple_nameless_recognizers_context_is_correct(spacy_nlp_engine)
 
     for recognizer_result in recognizer_results:
         assert recognizer_result.score > 0.3
+
+
+def test_when_regex_allow_list_times_out_then_result_is_kept(loaded_analyzer_engine):
+    """Test that a timed-out allow list regex keeps the result (conservative behavior)."""
+    text = "bing.com is his favorite website"
+
+    with patch(
+        "presidio_analyzer.analyzer_engine.REGEX_TIMEOUT_SECONDS", 0.001
+    ):
+        with patch(
+            "presidio_analyzer.analyzer_engine.re.compile"
+        ) as mock_compile:
+            mock_compiled = mock_compile.return_value
+            mock_compiled.search.side_effect = TimeoutError("regex timed out")
+
+            results = loaded_analyzer_engine.analyze(
+                text=text,
+                language="en",
+                allow_list=["bing"],
+                allow_list_match="regex",
+            )
+
+    # Result should be kept on timeout (not filtered out)
+    assert any(r.entity_type == "URL" for r in results)
+

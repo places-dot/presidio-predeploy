@@ -8,13 +8,11 @@ def entities():
     return ["PERSON", "DATE_TIME"]
 
 
-@pytest.mark.skip_engine("transformers_en")
 @pytest.fixture(scope="module")
 def nlp_recognizer(nlp_recognizers):
     return nlp_recognizers.get("transformers", None)
 
 
-@pytest.mark.skip_engine("transformers_en")
 @pytest.fixture(scope="module")
 def nlp_engine(nlp_engines):
     nlp_engine = nlp_engines.get("transformers_en", None)
@@ -24,7 +22,6 @@ def nlp_engine(nlp_engines):
 
 
 def prepare_and_analyze(nlp, recognizer, text, entities):
-    nlp.load()
     nlp_artifacts = nlp.process_text(text, "en")
     results = recognizer.analyze(text, entities, nlp_artifacts)
     return results

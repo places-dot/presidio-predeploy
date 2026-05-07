@@ -26,8 +26,16 @@ class AnalysisBuilder(ABC):
         self,
         analyzer: Optional[AnalyzerEngine] = None,
         analyzer_score_threshold: Optional[float] = None,
+        n_process: int = 1,
+        batch_size: int = 1
     ) -> None:
-        """Initialize the configuration generator."""
+        """Initialize the configuration generator.
+
+        :param analyzer: AnalyzerEngine instance
+        :param analyzer_score_threshold: threshold for filtering out results
+        :param batch_size: Batch size to process in a single iteration
+        :param n_process: Number of processors to use. Defaults to `1`
+        """
         default_score_threshold = (
             analyzer_score_threshold if analyzer_score_threshold is not None else 0
         )
@@ -37,6 +45,8 @@ class AnalysisBuilder(ABC):
             else analyzer
         )
         self.batch_analyzer = BatchAnalyzerEngine(analyzer_engine=self.analyzer)
+        self.n_process = n_process
+        self.batch_size = batch_size
 
     @abstractmethod
     def generate_analysis(
@@ -92,7 +102,10 @@ class JsonAnalysisBuilder(AnalysisBuilder):
         """
         logger.debug("Starting JSON BatchAnalyzer analysis")
         analyzer_results = self.batch_analyzer.analyze_dict(
-            input_dict=data, language=language
+            input_dict=data,
+            language=language,
+            n_process=self.n_process,
+            batch_size=self.batch_size
         )
 
         key_recognizer_result_map = self._generate_analysis_from_results_json(
@@ -109,13 +122,12 @@ class JsonAnalysisBuilder(AnalysisBuilder):
         self, analyzer_results: Iterator[DictAnalyzerResult], prefix: str = ""
     ) -> Dict[str, RecognizerResult]:
         """
-        Generate a configuration from the given analyzer results. \
-             Always uses the first recognizer result if there are more than one.
+        Generate a configuration from the given analyzer results. Always uses the first recognizer result if there are more than one.
 
         :param analyzer_results: The analyzer results.
         :param prefix: The prefix for the configuration keys.
         :return: The generated configuration.
-        """
+        """  # noqa: E501
         key_recognizer_result_map = {}
 
         if not isinstance(analyzer_results, Iterable):
@@ -145,8 +157,7 @@ class JsonAnalysisBuilder(AnalysisBuilder):
 
 
 class TabularAnalysisBuilder(AnalysisBuilder):
-    """Placeholder class for generalizing tabular data analysis builders \
-          (e.g. PySpark). Only implemented as PandasAnalysisBuilder for now."""
+    """Placeholder class for generalizing tabular data analysis builders (e.g. PySpark). Only implemented as PandasAnalysisBuilder for now."""  # noqa: E501
 
     pass
 
@@ -188,10 +199,7 @@ class PandasAnalysisBuilder(TabularAnalysisBuilder):
         df = df.sample(n, random_state=123)
 
         key_recognizer_result_map = self._generate_key_rec_results_map(
-            df,
-            language,
-            selection_strategy,
-            mixed_strategy_threshold
+            df, language, selection_strategy, mixed_strategy_threshold
         )
 
         key_entity_map = {
@@ -226,9 +234,7 @@ class PandasAnalysisBuilder(TabularAnalysisBuilder):
         key_recognizer_result_map = {}
         for column, analyzer_result in column_analyzer_results_map.items():
             key_recognizer_result_map[column] = self._find_entity_based_on_strategy(
-                analyzer_result,
-                selection_strategy,
-                mixed_strategy_threshold
+                analyzer_result, selection_strategy, mixed_strategy_threshold
             )
         return key_recognizer_result_map
 
@@ -247,17 +253,20 @@ class PandasAnalysisBuilder(TabularAnalysisBuilder):
         for column in df.columns:
             logger.debug(f"Finding most common PII entity for column {column}")
             analyzer_results = self.batch_analyzer.analyze_iterator(
-                [val for val in df[column]], language=language
+                [val for val in df[column]],
+                language=language,
+                n_process=self.n_process,
+                batch_size=self.batch_size
             )
             column_analyzer_results_map[column] = analyzer_results
 
         return column_analyzer_results_map
 
     def _find_entity_based_on_strategy(
-            self,
-            analyzer_results: List[List[RecognizerResult]],
-            selection_strategy: str,
-            mixed_strategy_threshold: float
+        self,
+        analyzer_results: List[List[RecognizerResult]],
+        selection_strategy: str,
+        mixed_strategy_threshold: float,
     ) -> RecognizerResult:
         """
         Determine the most suitable entity based on the specified selection strategy.
@@ -272,11 +281,12 @@ class PandasAnalysisBuilder(TabularAnalysisBuilder):
         if selection_strategy not in self.entity_selection_strategies:
             raise ValueError(
                 f"Unsupported entity selection strategy: {selection_strategy}."
-                )
+            )
 
         if not any(analyzer_results):
-            return RecognizerResult(entity_type=NON_PII_ENTITY_TYPE, start=0, end=1,
-                                    score=1.0)
+            return RecognizerResult(
+                entity_type=NON_PII_ENTITY_TYPE, start=0, end=1, score=1.0
+            )
 
         flat_results = self._flatten_results(analyzer_results)
 
@@ -284,8 +294,9 @@ class PandasAnalysisBuilder(TabularAnalysisBuilder):
         if selection_strategy == "highest_confidence":
             return self._select_highest_confidence_entity(flat_results)
         elif selection_strategy == "mixed":
-            return self._select_mixed_strategy_entity(flat_results,
-                                                      mixed_strategy_threshold)
+            return self._select_mixed_strategy_entity(
+                flat_results, mixed_strategy_threshold
+            )
 
         return self._select_most_common_entity(flat_results)
 
@@ -320,26 +331,31 @@ class PandasAnalysisBuilder(TabularAnalysisBuilder):
         score_aggregator = self._aggregate_scores(flat_results)
 
         # Find the highest score across all entities
-        highest_score = max(max(scores) for scores in score_aggregator.values()
-                            if scores)
+        highest_score = max(
+            max(scores) for scores in score_aggregator.values() if scores
+        )
 
         # Find the entities with the highest score and count their occurrences
         entities_highest_score = {
             entity: scores.count(highest_score)
-            for entity, scores in score_aggregator.items() if highest_score in scores
+            for entity, scores in score_aggregator.items()
+            if highest_score in scores
         }
 
         # Find the entity(ies) with the most number of high scores
         max_occurrences = max(entities_highest_score.values())
         highest_confidence_entities = [
-            entity for entity, count in entities_highest_score.items()
+            entity
+            for entity, count in entities_highest_score.items()
             if count == max_occurrences
         ]
 
         return RecognizerResult(
-            entity_type=highest_confidence_entities[0], start=0, end=1,
-            score=highest_score
-            )
+            entity_type=highest_confidence_entities[0],
+            start=0,
+            end=1,
+            score=highest_score,
+        )
 
     def _select_mixed_strategy_entity(self, flat_results, mixed_strategy_threshold):
         """
@@ -356,13 +372,14 @@ class PandasAnalysisBuilder(TabularAnalysisBuilder):
         if not 0 <= mixed_strategy_threshold <= 1:
             raise ValueError(
                 f"Invalid mixed strategy threshold: {mixed_strategy_threshold}."
-                )
+            )
 
         score_aggregator = self._aggregate_scores(flat_results)
 
         # Check if the highest score is greater than threshold and select accordingly
-        highest_score = max(max(scores) for scores in score_aggregator.values()
-                            if scores)
+        highest_score = max(
+            max(scores) for scores in score_aggregator.values() if scores
+        )
         if highest_score > mixed_strategy_threshold:
             return self._select_highest_confidence_entity(flat_results)
         else:
@@ -394,5 +411,8 @@ class PandasAnalysisBuilder(TabularAnalysisBuilder):
         :return: A flattened list of tuples containing index and RecognizerResult
         objects.
         """
-        return [(cell_idx, res) for cell_idx, cell_results in
-                enumerate(analyzer_results) for res in cell_results]
+        return [
+            (cell_idx, res)
+            for cell_idx, cell_results in enumerate(analyzer_results)
+            for res in cell_results
+        ]

@@ -2,13 +2,13 @@ import copy
 import logging
 from typing import Optional, List
 
-import torch
 from presidio_analyzer import (
     RecognizerResult,
     EntityRecognizer,
     AnalysisExplanation,
 )
 from presidio_analyzer.nlp_engine import NlpArtifacts
+from presidio_analyzer.nlp_engine.device_detector import device_detector
 
 from .configuration import BERT_DEID_CONFIGURATION
 
@@ -133,7 +133,7 @@ class TransformersRecognizer(EntityRecognizer):
         """Initialize NER transformers pipeline using the model_path provided"""
 
         logging.debug(f"Initializing NER pipeline using {self.model_path} path")
-        device = 0 if torch.cuda.is_available() else -1
+        device = 0 if device_detector.get_device() == "cuda" else -1
         self.pipeline = pipeline(
             "ner",
             model=AutoModelForTokenClassification.from_pretrained(self.model_path),
@@ -161,7 +161,7 @@ class TransformersRecognizer(EntityRecognizer):
         """
         Analyze text using transformers model to produce NER tagging.
         :param text : The text for analysis.
-        :param entities: Not working properly for this recognizer.
+        :param entities: The list of entities this recognizer is able to detect
         :param nlp_artifacts: Not used by this recognizer.
         :return: The list of Presidio RecognizerResult constructed from the recognized
             transformers detections.
@@ -173,7 +173,7 @@ class TransformersRecognizer(EntityRecognizer):
 
         for res in ner_results:
             res["entity_group"] = self.__check_label_transformer(res["entity_group"])
-            if not res["entity_group"]:
+            if not res["entity_group"] or res["entity_group"] not in entities:
                 continue
 
             if res["entity_group"] == self.id_entity_name:

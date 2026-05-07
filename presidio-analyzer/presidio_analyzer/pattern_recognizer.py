@@ -1,19 +1,24 @@
 import datetime
 import logging
-from typing import List, Optional, Dict
+import os
+from typing import TYPE_CHECKING, Dict, List, Optional
 
 import regex as re
 
 from presidio_analyzer import (
+    AnalysisExplanation,
+    EntityRecognizer,
     LocalRecognizer,
     Pattern,
     RecognizerResult,
-    EntityRecognizer,
-    AnalysisExplanation,
 )
-from presidio_analyzer.nlp_engine import NlpArtifacts
+
+if TYPE_CHECKING:
+    from presidio_analyzer.nlp_engine import NlpArtifacts
 
 logger = logging.getLogger("presidio-analyzer")
+
+REGEX_TIMEOUT_SECONDS = int(os.environ.get("REGEX_TIMEOUT_SECONDS", 60))
 
 
 class PatternRecognizer(LocalRecognizer):
@@ -72,14 +77,14 @@ class PatternRecognizer(LocalRecognizer):
         else:
             self.deny_list = []
 
-    def load(self):  # noqa D102
+    def load(self):  # noqa: D102
         pass
 
     def analyze(
         self,
         text: str,
         entities: List[str],
-        nlp_artifacts: Optional[NlpArtifacts] = None,
+        nlp_artifacts: Optional["NlpArtifacts"] = None,
         regex_flags: Optional[int] = None,
     ) -> List[RecognizerResult]:
         """
@@ -156,6 +161,10 @@ class PatternRecognizer(LocalRecognizer):
         :param regex_flags: Regex flags used in the regex matching
         :return: Analysis explanation
         """
+        textual_explanation = (
+            f"Detected by `{recognizer_name}` " f"using pattern `{pattern_name}`"
+        )
+
         explanation = AnalysisExplanation(
             recognizer=recognizer_name,
             original_score=original_score,
@@ -163,6 +172,7 @@ class PatternRecognizer(LocalRecognizer):
             pattern=pattern,
             validation_result=validation_result,
             regex_flags=regex_flags,
+            textual_explanation=textual_explanation,
         )
         return explanation
 
@@ -188,61 +198,70 @@ class PatternRecognizer(LocalRecognizer):
                 pattern.compiled_with_flags = flags
                 pattern.compiled_regex = re.compile(pattern.regex, flags=flags)
 
-            matches = pattern.compiled_regex.finditer(text)
-            match_time = datetime.datetime.now() - match_start_time
-            logger.debug(
-                "--- match_time[%s]: %s.%s seconds",
-                pattern.name,
-                match_time.seconds,
-                match_time.microseconds,
-            )
-
-            for match in matches:
-                start, end = match.span()
-                current_match = text[start:end]
-
-                # Skip empty results
-                if current_match == "":
-                    continue
-
-                score = pattern.score
-
-                validation_result = self.validate_result(current_match)
-                description = self.build_regex_explanation(
-                    self.name,
+            try:
+                matches = pattern.compiled_regex.finditer(
+                    text, timeout=REGEX_TIMEOUT_SECONDS
+                )
+                match_time = datetime.datetime.now() - match_start_time
+                logger.debug(
+                    "--- match_time[%s]: %.6f seconds",
                     pattern.name,
-                    pattern.regex,
-                    score,
-                    validation_result,
-                    flags,
-                )
-                pattern_result = RecognizerResult(
-                    entity_type=self.supported_entities[0],
-                    start=start,
-                    end=end,
-                    score=score,
-                    analysis_explanation=description,
-                    recognition_metadata={
-                        RecognizerResult.RECOGNIZER_NAME_KEY: self.name,
-                        RecognizerResult.RECOGNIZER_IDENTIFIER_KEY: self.id,
-                    },
+                    match_time.total_seconds(),
                 )
 
-                if validation_result is not None:
-                    if validation_result:
-                        pattern_result.score = EntityRecognizer.MAX_SCORE
-                    else:
+                for match in matches:
+                    start, end = match.span()
+                    current_match = text[start:end]
+
+                    # Skip empty results
+                    if current_match == "":
+                        continue
+
+                    score = pattern.score
+
+                    validation_result = self.validate_result(current_match)
+                    description = self.build_regex_explanation(
+                        self.name,
+                        pattern.name,
+                        pattern.regex,
+                        score,
+                        validation_result,
+                        flags,
+                    )
+                    pattern_result = RecognizerResult(
+                        entity_type=self.supported_entities[0],
+                        start=start,
+                        end=end,
+                        score=score,
+                        analysis_explanation=description,
+                        recognition_metadata={
+                            RecognizerResult.RECOGNIZER_NAME_KEY: self.name,
+                            RecognizerResult.RECOGNIZER_IDENTIFIER_KEY: self.id,
+                        },
+                    )
+
+                    if validation_result is not None:
+                        if validation_result:
+                            pattern_result.score = EntityRecognizer.MAX_SCORE
+                        else:
+                            pattern_result.score = EntityRecognizer.MIN_SCORE
+
+                    invalidation_result = self.invalidate_result(current_match)
+                    if invalidation_result is not None and invalidation_result:
                         pattern_result.score = EntityRecognizer.MIN_SCORE
 
-                invalidation_result = self.invalidate_result(current_match)
-                if invalidation_result is not None and invalidation_result:
-                    pattern_result.score = EntityRecognizer.MIN_SCORE
+                    if pattern_result.score > EntityRecognizer.MIN_SCORE:
+                        results.append(pattern_result)
 
-                if pattern_result.score > EntityRecognizer.MIN_SCORE:
-                    results.append(pattern_result)
-
-                # Update analysis explanation score following validation or invalidation
-                description.score = pattern_result.score
+                    # Update analysis explanation score after validation or invalidation
+                    description.score = pattern_result.score
+            except TimeoutError:
+                logger.warning(
+                    "Regex pattern '%s' timed out after %s seconds, skipping.",
+                    pattern.name,
+                    REGEX_TIMEOUT_SECONDS,
+                    exc_info=True,
+                )
 
         results = EntityRecognizer.remove_duplicates(results)
         return results
@@ -262,9 +281,30 @@ class PatternRecognizer(LocalRecognizer):
     @classmethod
     def from_dict(cls, entity_recognizer_dict: Dict) -> "PatternRecognizer":
         """Create instance from a serialized dict."""
+        # Make a copy to avoid mutating the input
+        entity_recognizer_dict = entity_recognizer_dict.copy()
+
         patterns = entity_recognizer_dict.get("patterns")
         if patterns:
             patterns_list = [Pattern.from_dict(pat) for pat in patterns]
             entity_recognizer_dict["patterns"] = patterns_list
+
+        # Transform supported_entities (plural) to supported_entity (singular)
+        # PatternRecognizer only accepts supported_entity (singular)
+        if (
+            "supported_entity" in entity_recognizer_dict
+            and "supported_entities" in entity_recognizer_dict
+        ):
+            raise ValueError(
+                "Both 'supported_entity' and 'supported_entities' "
+                "are present in the input dictionary. "
+                "Only one should be provided."
+            )
+        if "supported_entities" in entity_recognizer_dict:
+            supported_entities = entity_recognizer_dict.pop("supported_entities")
+            if supported_entities and len(supported_entities) > 0:
+                # Only set if not already present
+                if "supported_entity" not in entity_recognizer_dict:
+                    entity_recognizer_dict["supported_entity"] = supported_entities[0]
 
         return cls(**entity_recognizer_dict)

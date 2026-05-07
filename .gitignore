@@ -162,3 +162,8 @@ mkdocs/
 /infrastructure/tmp
 
 /infrastructure/ssh
+/presidio_mkdocs
+
+# Visual Studio
+/.vs
+/TestResults

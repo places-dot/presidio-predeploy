@@ -1,5 +1,5 @@
 [[source]]
-url = "https://pypi.python.org/simple"
+url = "https://pypi.org/simple"
 verify_ssl = true
 name = "pypi"
 
@@ -14,8 +14,6 @@ typing-extensions = "*"
 spacy-huggingface-pipelines = "*"
 azure-ai-textanalytics = "*"
 azure-core = "*"
-waitress = ">=3.0"
-
 # stanza = "*"
 # spacy-stanza = "*"
 
@@ -27,3 +25,6 @@ pep8-naming = "*"
 flake8-docstrings = "*"
 pre_commit = "*"
 python-dotenv = "*"
+
+[requires]
+python_version = "3.12"

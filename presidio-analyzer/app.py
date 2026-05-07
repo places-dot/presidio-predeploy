@@ -6,7 +6,13 @@ from logging.config import fileConfig
 from pathlib import Path
 from typing import Tuple
 
-from flask import Flask, request, jsonify, Response
+from flask import Flask, Response, jsonify, request
+from presidio_analyzer import (
+    AnalyzerEngine,
+    AnalyzerEngineProvider,
+    AnalyzerRequest,
+    BatchAnalyzerEngine,
+)
 from werkzeug.exceptions import HTTPException
 
 from presidio_analyzer.analyzer_engine import AnalyzerEngine
@@ -15,6 +21,8 @@ from presidio_analyzer.analyzer_request import AnalyzerRequest
 API_KEY = os.getenv('API_KEY')
 
 DEFAULT_PORT = "3000"
+DEFAULT_BATCH_SIZE = "500"
+DEFAULT_N_PROCESS = "1"
 
 LOGGING_CONF_FILE = "logging.ini"
 
@@ -38,8 +46,21 @@ class Server:
         self.logger = logging.getLogger("presidio-analyzer")
         self.logger.setLevel(os.environ.get("LOG_LEVEL", self.logger.level))
         self.app = Flask(__name__)
+
+        analyzer_conf_file = os.environ.get("ANALYZER_CONF_FILE") or None
+        nlp_engine_conf_file = os.environ.get("NLP_CONF_FILE") or None
+        recognizer_registry_conf_file = (
+            os.environ.get("RECOGNIZER_REGISTRY_CONF_FILE") or None
+        )
+
         self.logger.info("Starting analyzer engine")
-        self.engine = AnalyzerEngine()
+        self.engine: AnalyzerEngine = AnalyzerEngineProvider(
+            analyzer_engine_conf_file=analyzer_conf_file,
+            nlp_engine_conf_file=nlp_engine_conf_file,
+            recognizer_registry_conf_file=recognizer_registry_conf_file,
+        ).create_engine()
+
+        self.batch_engine = BatchAnalyzerEngine(self.engine)
         self.logger.info(WELCOME_MESSAGE)
 
         @self.app.before_request
@@ -67,11 +88,21 @@ class Server:
                 if not req_data.text:
                     raise Exception("No text provided")
 
+                batch_request = isinstance(req_data.text, list)
+                batch = req_data.text if batch_request else [req_data.text]
+
                 if not req_data.language:
                     raise Exception("No language provided")
+                else:
+                    # Make sure the language is supported by the engine.
+                    self.engine.get_supported_entities(req_data.language)
 
-                recognizer_result_list = self.engine.analyze(
-                    text=req_data.text,
+                iterator = self.batch_engine.analyze_iterator(
+                    texts=batch,
+                    batch_size=min(
+                        len(batch),
+                        int(os.environ.get("BATCH_SIZE", DEFAULT_BATCH_SIZE))
+                    ),
                     language=req_data.language,
                     correlation_id=req_data.correlation_id,
                     score_threshold=req_data.score_threshold,
@@ -79,11 +110,22 @@ class Server:
                     return_decision_process=req_data.return_decision_process,
                     ad_hoc_recognizers=req_data.ad_hoc_recognizers,
                     context=req_data.context,
+                    allow_list=req_data.allow_list,
+                    allow_list_match=req_data.allow_list_match,
+                    regex_flags=req_data.regex_flags,
+                    n_process=min(
+                        len(batch),
+                        int(os.environ.get("N_PROCESS", DEFAULT_N_PROCESS))
+                    )
                 )
+                results = []
+                for recognizer_result_list in iterator:
+                    _exclude_attributes_from_dto(recognizer_result_list)
+                    results.append(recognizer_result_list)
 
                 return Response(
                     json.dumps(
-                        recognizer_result_list,
+                        results if batch_request else results[0],
                         default=lambda o: o.to_dict(),
                         sort_keys=True,
                     ),
@@ -138,9 +180,26 @@ class Server:
             return jsonify(error=e.description), e.code
 
 def start():
-    return Server().app
+    return create_app()
+
+def _exclude_attributes_from_dto(recognizer_result_list):
+    excluded_attributes = [
+        "recognition_metadata",
+    ]
+    for result in recognizer_result_list:
+        for attr in excluded_attributes:
+            if hasattr(result, attr):
+                delattr(result, attr)
+
+
+def create_app():  # noqa: D103
+    server = Server()
+    return server.app
+
 
 if __name__ == "__main__":
+    app = create_app()
     port = int(os.environ.get("PORT", DEFAULT_PORT))
-    
+
     serve(start(), host="0.0.0.0", port=8080)
+    app.run(host="0.0.0.0", port=port)

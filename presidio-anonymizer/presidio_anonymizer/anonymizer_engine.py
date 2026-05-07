@@ -1,16 +1,17 @@
 """Handles the entire logic of the Presidio-anonymizer and text anonymizing."""
+
 import logging
 import re
-from typing import List, Dict, Optional, Type
+from typing import Dict, List, Optional, Type
 
 from presidio_anonymizer.core import EngineBase
 from presidio_anonymizer.entities import (
+    ConflictResolutionStrategy,
+    EngineResult,
     OperatorConfig,
     RecognizerResult,
-    EngineResult,
-    ConflictResolutionStrategy,
 )
-from presidio_anonymizer.operators import OperatorType, Operator
+from presidio_anonymizer.operators import Operator, OperatorType
 
 DEFAULT = "replace"
 
@@ -26,13 +27,14 @@ class AnonymizerEngine(EngineBase):
     """
 
     def anonymize(
-            self,
-            text: str,
-            analyzer_results: List[RecognizerResult],
-            operators: Optional[Dict[str, OperatorConfig]] = None,
-            conflict_resolution: ConflictResolutionStrategy = (
-                ConflictResolutionStrategy.MERGE_SIMILAR_OR_CONTAINED
-            ),
+        self,
+        text: str,
+        analyzer_results: List[RecognizerResult],
+        operators: Optional[Dict[str, OperatorConfig]] = None,
+        conflict_resolution: ConflictResolutionStrategy = (
+            ConflictResolutionStrategy.MERGE_SIMILAR_OR_CONTAINED
+        ),
+        merge_entities_with_spaces: bool = True,
     ) -> EngineResult:
         """Anonymize method to anonymize the given text.
 
@@ -82,20 +84,33 @@ class AnonymizerEngine(EngineBase):
 
 
         """
+        # We do this to make sure the original analyzer_results object is not
+        # modified
+        analyzer_results = self._copy_recognizer_results(analyzer_results)
+
+        # Sort because downstream processors like whitespace merging expect input to
+        # be sorted by start, end to work correctly
+        analyzer_results.sort(key=lambda x: (x.start, x.end))
+
         analyzer_results = self._remove_conflicts_and_get_text_manipulation_data(
             analyzer_results, conflict_resolution
         )
 
-        merged_results = self._merge_entities_with_whitespace_between(
+        if merge_entities_with_spaces:
+            merged_results = self._merge_entities_with_spaces_between(
                 text, analyzer_results
-        )
+            )
+        else:
+            merged_results = analyzer_results
 
         operators = self.__check_or_add_default_operator(operators)
 
-        return self._operate(text=text,
-                             pii_entities=merged_results,
-                             operators_metadata=operators,
-                             operator_type=OperatorType.Anonymize)
+        return self._operate(
+            text=text,
+            pii_entities=merged_results,
+            operators_metadata=operators,
+            operator_type=OperatorType.Anonymize,
+        )
 
     def add_anonymizer(self, anonymizer_cls: Type[Operator]) -> None:
         """
@@ -116,9 +131,9 @@ class AnonymizerEngine(EngineBase):
         self.operators_factory.remove_anonymize_operator(anonymizer_cls)
 
     def _remove_conflicts_and_get_text_manipulation_data(
-            self,
-            analyzer_results: List[RecognizerResult],
-            conflict_resolution: ConflictResolutionStrategy
+        self,
+        analyzer_results: List[RecognizerResult],
+        conflict_resolution: ConflictResolutionStrategy,
     ) -> List[RecognizerResult]:
         """
         Iterate the list and create a sorted unique results list from it.
@@ -152,8 +167,9 @@ class AnonymizerEngine(EngineBase):
                 other_elements.append(result)
                 tmp_analyzer_results.append(result)
             else:
-                self.logger.debug(f"removing element {result} from "
-                                  f"results list due to merge")
+                self.logger.debug(
+                    f"removing element {result} from " f"results list due to merge"
+                )
 
         unique_text_metadata_elements = []
         # This list contains all elements which we need to check a single result
@@ -195,15 +211,14 @@ class AnonymizerEngine(EngineBase):
                         key=lambda element: element.start
                     )
             unique_text_metadata_elements = [
-                element for element in unique_text_metadata_elements
+                element
+                for element in unique_text_metadata_elements
                 if element.start <= element.end
-                ]
+            ]
         return unique_text_metadata_elements
 
-    def _merge_entities_with_whitespace_between(
-        self,
-        text: str,
-        analyzer_results: List[RecognizerResult]
+    def _merge_entities_with_spaces_between(
+        self, text: str, analyzer_results: List[RecognizerResult]
     ) -> List[RecognizerResult]:
         """Merge adjacent entities of the same type separated by whitespace."""
         merged_results = []
@@ -211,7 +226,7 @@ class AnonymizerEngine(EngineBase):
         for result in analyzer_results:
             if prev_result is not None:
                 if prev_result.entity_type == result.entity_type:
-                    if re.search(r'^( )+$', text[prev_result.end:result.start]):
+                    if re.search(r"^( )+$", text[prev_result.end:result.start]):
                         merged_results.remove(prev_result)
                         result.start = prev_result.start
             merged_results.append(result)
@@ -231,7 +246,7 @@ class AnonymizerEngine(EngineBase):
 
     @staticmethod
     def __check_or_add_default_operator(
-            operators: Dict[str, OperatorConfig]
+        operators: Dict[str, OperatorConfig],
     ) -> Dict[str, OperatorConfig]:
         default_operator = OperatorConfig(DEFAULT)
         if not operators:
@@ -239,3 +254,17 @@ class AnonymizerEngine(EngineBase):
         if not operators.get("DEFAULT"):
             operators["DEFAULT"] = default_operator
         return operators
+
+    @staticmethod
+    def _copy_recognizer_results(
+        analyzer_results: List[RecognizerResult],
+    ) -> List[RecognizerResult]:
+        return [
+            RecognizerResult(
+                start=result.start,
+                end=result.end,
+                entity_type=result.entity_type,
+                score=result.score,
+            )
+            for result in analyzer_results
+        ]

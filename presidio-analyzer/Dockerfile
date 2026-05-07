@@ -1,26 +1,56 @@
-FROM python:3.9-slim
-
-RUN apt-get update && apt-get install -y curl
+FROM python:3.12-slim@sha256:804ddf3251a60bbf9c92e73b7566c40428d54d0e79d3428194edf40da6521286
 
 ARG NAME
 ARG NLP_CONF_FILE=conf/default.yaml
+ARG ANALYZER_CONF_FILE=conf/default_analyzer.yaml
+ARG RECOGNIZER_REGISTRY_CONF_FILE=conf/default_recognizers.yaml
+RUN apt-get update && apt-get install -y curl
+
 ENV PIPENV_VENV_IN_PROJECT=1
 ENV PIP_NO_CACHE_DIR=1
-WORKDIR /usr/bin/${NAME}
+ENV POETRY_VIRTUALENVS_CREATE=false
 
-COPY ./Pipfile* /usr/bin/${NAME}/
-RUN pip install pipenv \
-  && pipenv install --deploy
-# install nlp models specified in conf/default.yaml
-COPY ./install_nlp_models.py /usr/bin/${NAME}/
-COPY ${NLP_CONF_FILE} /usr/bin/${NAME}/${NLP_CONF_FILE}
-RUN pipenv run python install_nlp_models.py --conf_file ${NLP_CONF_FILE}
+ENV PORT=3000
+ENV WORKERS=1
 
-COPY . /usr/bin/${NAME}/
-EXPOSE ${PORT}
+COPY ${ANALYZER_CONF_FILE} /app/${ANALYZER_CONF_FILE}
+COPY ${RECOGNIZER_REGISTRY_CONF_FILE} /app/${RECOGNIZER_REGISTRY_CONF_FILE}
+COPY ${NLP_CONF_FILE} /app/${NLP_CONF_FILE}
+
+WORKDIR /app
+
+# Install essential build tools and curl for health checks
+RUN apt-get update \
+  && apt-get install curl --no-install-recommends -y \
+  && rm -rf /var/lib/apt/lists/*
+
+COPY ./pyproject.toml /app/
+
+RUN pip install poetry==2.3.2 \
+    && poetry install --no-root --only=main -E server \
+    && rm -rf $(poetry config cache-dir)
+
+# install nlp models specified in NLP_CONF_FILE or via nlp_configuration in ANALYZER_CONF_FILE
+COPY ./install_nlp_models.py /app/
+
+RUN poetry run python install_nlp_models.py \
+    --conf_file ${NLP_CONF_FILE} \
+    --analyzer_conf_file ${ANALYZER_CONF_FILE}
+
+COPY . /app/
 
 RUN apt-get clean autoclean
 RUN apt-get autoremove --yes
 RUN rm -rf /var/lib/{apt,dpkg,cache,log}/
+
+# Create a non-root user and set ownership
+RUN useradd -m -u 1001 presidio && chown -R presidio:presidio /app
+
+USER 1001
+
+EXPOSE ${PORT}
+
+HEALTHCHECK --interval=30s --timeout=3s --start-period=30s --retries=3 \
+    CMD curl -f http://localhost:${PORT}/health || exit 1
 
 CMD pipenv run python app.py --host 0.0.0.0
