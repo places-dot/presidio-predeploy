@@ -1,24 +1,38 @@
-FROM python:3.11-slim-bookworm
+FROM python:3.12-slim@sha256:804ddf3251a60bbf9c92e73b7566c40428d54d0e79d3428194edf40da6521286
 
-RUN apt-get update && apt-get install -y curl
+ARG NAME
+ARG NLP_CONF_FILE=default
+ARG ANALYZER_CONF_FILE=conf/default_analyzer.yaml
+ARG RECOGNIZER_REGISTRY_CONF_FILE=conf/default_recognizers.yaml
 
-ARG NLP_CONF_FILE
-ENV NLP_CONF_FILE=conf/$NLP_CONF_FILE.yaml
+ENV NLP_CONF_FILE=conf/${NLP_CONF_FILE}.yaml
 ENV PIPENV_VENV_IN_PROJECT=1
 ENV PIP_NO_CACHE_DIR=1
-WORKDIR /opt/app/
+ENV POETRY_VIRTUALENVS_CREATE=false
+WORKDIR /app/
 
-COPY . /opt/app/
-RUN pip install waitress pipenv flask && pipenv install --deploy
-# install nlp models specified in conf/default.yaml
+RUN apt-get update \
+  && apt-get install curl --no-install-recommends -y \
+  && rm -rf /var/lib/apt/lists/*
 
-COPY $NLP_CONF_FILE  /opt/app/$NLP_CONF_FILE
-RUN pipenv run python install_nlp_models.py --conf_file $NLP_CONF_FILE
+COPY ./pyproject.toml /app/
+COPY ./install_nlp_models.py /app/
+COPY ./presidio_analyzer/conf /app/conf
+
+RUN pip install poetry==2.3.2 waitress \
+    && poetry install --no-root --only=main -E server \
+    && rm -rf $(poetry config cache-dir)
+
+RUN python install_nlp_models.py \
+    --conf_file ${NLP_CONF_FILE} \
+    --analyzer_conf_file ${ANALYZER_CONF_FILE}
+
+COPY . /app/
 
 RUN apt-get clean autoclean
 RUN apt-get autoremove --yes
 RUN rm -rf /var/lib/{apt,dpkg,cache,log}/
 
-EXPOSE 5001:5001
+EXPOSE 5001
 
-CMD ["pipenv", "run", "waitress-serve", "--port=5001", "--call", "app:start"]
+CMD ["waitress-serve", "--port=5001", "--call", "app:start"]
